@@ -1,7 +1,7 @@
 ![Python >=3.6](https://img.shields.io/badge/Python->=3.6-yellow.svg)
 ![PyTorch >=1.10](https://img.shields.io/badge/PyTorch->=1.10-blue.svg)
 
-# [Arxiv] Spectral Aware Softmax for Visible-Infrared Person Re-Identification
+# Spectral Aware Softmax for Visible-Infrared Person Re-Identification
 The official repository for Spectral Aware Softmax for Visible-Infrared Person Re-Identification [[pdf]](https://arxiv.org/pdf/2302.01512.pdf)
 
 ## Training
