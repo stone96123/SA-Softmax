@@ -15,7 +15,6 @@ from sklearn import manifold, datasets
 import sys
 from model import embed_net
 from utils import *
-from loss import OriTripletLoss
 from random_erasing import RandomErasing
 from inner_id import IDA_classifier
 from proxy_mse import proxyMSE
@@ -26,7 +25,7 @@ parser.add_argument('--dataset', default='sysu', help='dataset name: regdb or sy
 parser.add_argument('--lr', default=0.1 , type=float, help='learning rate, 0.00035 for adam')
 parser.add_argument('--optim', default='sgd', type=str, help='optimizer')
 parser.add_argument('--arch', default='resnet50', type=str, help='network baseline: resnet50')
-parser.add_argument('--resume', '-r', default='sysu_M_p8_n6_lr_0.026_weight_3_acc_best.t', type=str, help='resume from checkpoint')
+parser.add_argument('--resume', '-r', default='SAS_sysu.t', type=str, help='resume from checkpoint')
 parser.add_argument('--test-only', action='store_true', help='test only')
 parser.add_argument('--model_path', default='save_model/', type=str, help='model save path')
 parser.add_argument('--save_epoch', default=20, type=int, metavar='s', help='save model every 10 epochs')
@@ -55,12 +54,12 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
 dataset = args.dataset
 if dataset == 'sysu':
-    data_path = '/data/tanlei/SYSU-MM01/'
+    data_path = '/home/tan/data/data/sysu/'
     n_class = 395
     test_mode = [1, 2]
 elif dataset =='regdb':
-    data_path = '/data/tanlei/RegDB/'
-    n_class = 206
+    data_path = '/home/tan/data/data/regdb/RegDB/'
+    n_class = 395
     test_mode = [2, 1]
  
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -98,41 +97,55 @@ transform_test = transforms.Compose([
 
 end = time.time()
 
-
+def fliplr(img):
+    '''flip horizontal'''
+    inv_idx = torch.arange(img.size(3)-1,-1,-1).long()  # N x C x H x W
+    img_flip = img.index_select(3,inv_idx)
+    return img_flip
 
 def extract_gall_feat(gall_loader):
     net.eval()
     print ('Extracting Gallery Feature...')
     start = time.time()
     ptr = 0
-    gall_feat_pool = np.zeros((ngall, 12*2048))
-    gall_feat_fc = np.zeros((ngall, 12*512))
+    gall_feat_pool = np.zeros((ngall, args.part_num*2048))
+    gall_feat_fc = np.zeros((ngall, args.part_num*2048))
     with torch.no_grad():
         for batch_idx, (input, label ) in enumerate(gall_loader):
             batch_num = input.size(0)
-            input = Variable(input.cuda())
-            feat_fc = net(input, input, test_mode[0])
-            #gall_feat_pool[ptr:ptr+batch_num,: ] = feat_pool.detach().cpu().numpy()
+            input1 = Variable(input.cuda())
+            input2 = Variable(fliplr(input).cuda())
+            feat_pool1, feat_fc1 = net(input1, input1, test_mode[0])
+            feat_pool2, feat_fc2 = net(input2, input2, test_mode[0])
+            feat_pool = feat_pool1 + feat_pool2
+            feat_fc = feat_fc1 + feat_fc2
+            gall_feat_pool[ptr:ptr+batch_num,: ] = feat_pool.detach().cpu().numpy()
             gall_feat_fc[ptr:ptr+batch_num,: ]   = feat_fc.detach().cpu().numpy()
             ptr = ptr + batch_num
     print('Extracting Time:\t {:.3f}'.format(time.time()-start))
-    return gall_feat_fc, gall_feat_fc
+    return gall_feat_pool, gall_feat_fc
     
 def extract_query_feat(query_loader):
     net.eval()
     print ('Extracting Query Feature...')
     start = time.time()
     ptr = 0
-    query_feat_fc = np.zeros((nquery, 12*2048))
+    query_feat_pool = np.zeros((nquery, args.part_num*2048))
+    query_feat_fc = np.zeros((nquery, args.part_num*2048))
     with torch.no_grad():
         for batch_idx, (input, label ) in enumerate(query_loader):
             batch_num = input.size(0)
-            input = Variable(input.cuda())
-            feat_fc = net(input, input, test_mode[1])
+            input1 = Variable(input.cuda())
+            input2 = Variable(fliplr(input).cuda())
+            feat_pool1, feat_fc1 = net(input1, input1, test_mode[1])
+            feat_pool2, feat_fc2 = net(input2, input2, test_mode[1])
+            feat_pool = feat_pool1 + feat_pool2
+            feat_fc = feat_fc1 + feat_fc2
+            query_feat_pool[ptr:ptr+batch_num,: ] = feat_pool.detach().cpu().numpy()
             query_feat_fc[ptr:ptr+batch_num,: ]   = feat_fc.detach().cpu().numpy()
             ptr = ptr + batch_num         
     print('Extracting Time:\t {:.3f}'.format(time.time()-start))
-    return query_feat_fc, query_feat_fc
+    return query_feat_pool, query_feat_fc
 
 
 if dataset == 'sysu':
@@ -180,11 +193,14 @@ if dataset == 'sysu':
         scipy.io.savemat('pytorch_result.mat',result)
         # pool5 feature
         distmat_pool = np.matmul(query_feat_pool, np.transpose(gall_feat_pool))
-        cmc_pool, mAP_pool, mINP_pool = eval_sysu(-distmat_pool, query_label, gall_label, query_cam, gall_cam)
-
         # fc feature
         distmat = np.matmul(query_feat_fc, np.transpose(gall_feat_fc))
+        
+        distmat_pool = distmat_pool + distmat
+        
+        cmc_pool, mAP_pool, mINP_pool = eval_sysu(-distmat_pool, query_label, gall_label, query_cam, gall_cam)
         cmc, mAP, mINP = eval_sysu(-distmat, query_label, gall_label, query_cam, gall_cam)
+        
         if trial == 0:
             all_cmc = cmc
             all_mAP = mAP
@@ -203,17 +219,17 @@ if dataset == 'sysu':
         print('Test Trial: {}'.format(trial))
         print(
             'POOL:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
-                cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
+                cmc_pool[0], cmc_pool[4], cmc_pool[9], cmc_pool[19], mAP_pool, mINP_pool))
         print(
             'FC:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
-                cmc_pool[0], cmc_pool[4], cmc_pool[9], cmc_pool[19], mAP_pool, mINP_pool))
+                cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
 
 
 elif dataset == 'regdb':
 
     for trial in range(10):
         test_trial = trial + 1
-        model_path = checkpoint_path + 'regdb_RGB_p8_n7_lr_0.03_weight_3_trial_{}_mAP_best.t'.format(test_trial)
+        model_path = checkpoint_path + args.resume
         if os.path.isfile(model_path):
             print('==> loading checkpoint {}'.format(args.resume))
             checkpoint = torch.load(model_path)
@@ -245,18 +261,20 @@ elif dataset == 'regdb':
         if args.tvsearch:
             # pool5 feature
             distmat_pool = np.matmul(gall_feat_pool, np.transpose(query_feat_pool))
-            cmc_pool, mAP_pool, mINP_pool = eval_regdb(-distmat_pool, gall_label, query_label)
-
             # fc feature
             distmat = np.matmul(gall_feat_fc , np.transpose(query_feat_fc))
+            
+            distmat_pool = distmat_pool + distmat
+            cmc_pool, mAP_pool, mINP_pool = eval_regdb(-distmat_pool, gall_label, query_label)
             cmc, mAP, mINP = eval_regdb(-distmat,gall_label,  query_label )
         else:
             # pool5 feature
             distmat_pool = np.matmul(query_feat_pool, np.transpose(gall_feat_pool))
-            cmc_pool, mAP_pool, mINP_pool = eval_regdb(-distmat_pool, query_label, gall_label)
-
             # fc feature
             distmat = np.matmul(query_feat_fc, np.transpose(gall_feat_fc))
+            
+            distmat_pool = distmat_pool + distmat
+            cmc_pool, mAP_pool, mINP_pool = eval_regdb(-distmat_pool, query_label, gall_label)
             cmc, mAP, mINP = eval_regdb(-distmat, query_label, gall_label)
 
 
@@ -278,10 +296,11 @@ elif dataset == 'regdb':
         print('Test Trial: {}'.format(trial))
         print(
             'POOL:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
-                cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
+                cmc_pool[0], cmc_pool[4], cmc_pool[9], cmc_pool[19], mAP_pool, mINP_pool))
         print(
             'FC:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
-                cmc_pool[0], cmc_pool[4], cmc_pool[9], cmc_pool[19], mAP_pool, mINP_pool))
+                cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
+        
 
 cmc = all_cmc / 10
 mAP = all_mAP / 10
@@ -290,8 +309,8 @@ cmc_pool = all_cmc_pool / 10
 mAP_pool = all_mAP_pool / 10
 print('All Average:')
 print('Test Trial: {}'.format(trial))
-print(
-    'POOL:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
-        cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
-print('FC:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
+print('POOL:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
     cmc_pool[0], cmc_pool[4], cmc_pool[9], cmc_pool[19], mAP_pool, mINP_pool))
+print(
+    'FC:   Rank-1: {:.2%} | Rank-5: {:.2%} | Rank-10: {:.2%}| Rank-20: {:.2%}| mAP: {:.2%}| mINP: {:.2%}'.format(
+        cmc[0], cmc[4], cmc[9], cmc[19], mAP, mINP))
