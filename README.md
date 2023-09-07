@@ -10,7 +10,7 @@ The official repository for Spectral Aware Softmax for Visible-Infrared Person R
 
     - (Named: "Dongguk Body-based Person Recognition Database (DBPerson-Recog-DB1)" on their website). 
 
-    - A private download link can be requested via sending me an email (mangye16@gmail.com). 
+    - A private download link can be requested via sending me an email ([tanlei@stu.xmu.edu.cn](mailto:tanlei@stu.xmu.edu.cn)). 
   
 - (2) SYSU-MM01 Dataset [4]: The SYSU-MM01 dataset can be downloaded from this [website](http://isee.sysu.edu.cn/project/RGBIRReID.htm).
 
