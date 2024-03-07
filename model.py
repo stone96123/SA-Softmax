@@ -101,9 +101,10 @@ class ClassBlock(nn.Module):
         self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
+        pfeat = x
         feat = self.bottleneck(x)
         out = self.classifier(feat)
-        return feat, out
+        return pfeat, feat, out
 
 
 class classifier(nn.Module):
@@ -116,14 +117,14 @@ class classifier(nn.Module):
             name = 'classifier_' + str(i)
             setattr(self, name, ClassBlock(input_dim, class_num))
 
-    def forward(self, x, feat_all, out_all):
+    def forward(self, x, pfeat_all, feat_all, out_all):
         start_point = len(feat_all)
         for i in range(self.part):
             name = 'classifier_' + str(i)
             cls_part = getattr(self, name)
-            feat_all[i + start_point], out_all[i + start_point] = cls_part(torch.squeeze(x[:, :, i]))
+            pfeat_all[i + start_point], feat_all[i + start_point], out_all[i + start_point] = cls_part(torch.squeeze(x[:, :, i]))
 
-        return feat_all, out_all
+        return pfeat_all, feat_all, out_all
         
         
 class embed_net(nn.Module):
@@ -151,15 +152,18 @@ class embed_net(nn.Module):
         # shared block
         x = self.base_resnet(x)
         x = self.avgpool(x)
+        pfeat = {}
         feat = {}
         out = {}
-        feat, out = self.classifier(x, feat, out)
+        pfeat, feat, out = self.classifier(x, pfeat, feat, out)
         if self.training:
-            return feat, out
+            return pfeat, feat, out
         else:
             for i in range(self.part):
                 if i == 0:
+                    pfeatf = self.l2norm(pfeat[i])
                     featf = self.l2norm(feat[i])
                 else:
+                    pfeatf = torch.cat((pfeatf, self.l2norm(pfeat[i])), 1)
                     featf = torch.cat((featf, self.l2norm(feat[i])), 1)
-            return self.l2norm(featf)
+            return self.l2norm(pfeatf), self.l2norm(featf)
