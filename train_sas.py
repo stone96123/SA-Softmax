@@ -19,7 +19,7 @@ from inner_id import IDA_classifier
 from proxy_mse import proxyMSE
 
 parser = argparse.ArgumentParser(description='PyTorch Cross-Modality Training')
-parser.add_argument('--dataset', default='regdb', help='dataset name: regdb or sysu]')
+parser.add_argument('--dataset', default='sysu', help='dataset name: regdb or sysu]')
 parser.add_argument('--lr', default=0.01, type=float, help='learning rate, 0.00035 for adam')
 parser.add_argument('--optim', default='sgd', type=str, help='optimizer')
 parser.add_argument('--arch', default='resnet50', type=str, help='network baseline:resnet18 or resnet50')
@@ -53,7 +53,7 @@ set_seed(args.seed)
 
 dataset = args.dataset
 if dataset == 'sysu':
-    data_path = '/home/tan/data/sysu/'
+    data_path = '/home/tan/data/data/sysu/'
     log_path = args.log_path + 'sysu_log/'
     test_mode = [1, 2]  # thermal to visible
 elif dataset == 'regdb':
@@ -100,9 +100,11 @@ transform_train_list = [
     transforms.RandomCrop((args.img_h, args.img_w)),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
+    #RandomLinear(probability=0.5, min_out=1e-2, sl=0.2, sh=0.8, r1=0.3),
     RandomLinear(probability=0.5, min_out=1e-2),
     RandomErasing(probability=0.5),
     normalize,
+    #RandomErasing(probability=0.5, sl=0.2, sh=0.8, r1=0.3, mean=[0.485, 0.456, 0.406]),
 ]
 transform_train = transforms.Compose(transform_train_list)
 print(transform_train_list)
@@ -245,7 +247,7 @@ def train(epoch):
         data_time.update(time.time() - end)
 
         ####################### Optimize the feature extractor ##########################
-        feat, output = net(input1, input2)
+        _, feat, output = net(input1, input2)
         outputG, proxy = add_net(feat)
         
         loss_id = 0
@@ -274,7 +276,7 @@ def train(epoch):
         ####################### Optimize the prototype matrix ##########################
         loss_D = 0
         with torch.no_grad():
-            feat, _ = net(input1, input2)
+            _, feat, _ = net(input1, input2)
         outputD, _ = add_net(feat)
         for i in range(args.part_num):
             loss_D += criterion_id(outputD[i], labelD)
@@ -305,20 +307,31 @@ def train(epoch):
                 100. * correct / total, batch_time=batch_time,
                 train_loss=train_loss, id_loss=id_loss))
 
-
+def fliplr(img):
+    '''flip horizontal'''
+    inv_idx = torch.arange(img.size(3)-1,-1,-1).long()  # N x C x H x W
+    img_flip = img.index_select(3,inv_idx)
+    return img_flip
+    
 def test(epoch):
     # switch to evaluation mode
     net.eval()
     print('Extracting Gallery Feature...')
     start = time.time()
     ptr = 0
-    gall_feat_att = np.zeros((ngall, args.part_num * 2048))
+    gall_feat_pool = np.zeros((ngall, args.part_num * 2048))
+    gall_feat_fc = np.zeros((ngall, args.part_num * 2048))
     with torch.no_grad():
         for batch_idx, (input, label) in enumerate(gall_loader):
             batch_num = input.size(0)
-            input = Variable(input.cuda())
-            feat_att = net(input, input, test_mode[0])
-            gall_feat_att[ptr:ptr + batch_num, :] = feat_att.detach().cpu().numpy()
+            input1 = Variable(input.cuda())
+            input2 = Variable(fliplr(input).cuda())
+            feat_pool1, feat_fc1 = net(input1, input1, test_mode[0])
+            feat_pool2, feat_fc2 = net(input2, input2, test_mode[0])
+            feat_pool = feat_pool1 + feat_pool2
+            feat_fc = feat_fc1 + feat_fc2
+            gall_feat_pool[ptr:ptr + batch_num, :] = feat_pool.detach().cpu().numpy()
+            gall_feat_fc[ptr:ptr + batch_num, :] = feat_fc.detach().cpu().numpy()
             ptr = ptr + batch_num
     print('Extracting Time:\t {:.3f}'.format(time.time() - start))
 
@@ -327,25 +340,33 @@ def test(epoch):
     print('Extracting Query Feature...')
     start = time.time()
     ptr = 0
-    query_feat_att = np.zeros((nquery, args.part_num * 2048))
+    query_feat_pool = np.zeros((nquery, args.part_num * 2048))
+    query_feat_fc = np.zeros((nquery, args.part_num * 2048))
     with torch.no_grad():
         for batch_idx, (input, label) in enumerate(query_loader):
             batch_num = input.size(0)
-            input = Variable(input.cuda())
-            feat_att = net(input, input, test_mode[1])
-            query_feat_att[ptr:ptr + batch_num, :] = feat_att.detach().cpu().numpy()
+            input1 = Variable(input.cuda())
+            input2 = Variable(fliplr(input).cuda())
+            feat_pool1, feat_fc1 = net(input1, input1, test_mode[1])
+            feat_pool2, feat_fc2 = net(input2, input2, test_mode[1])
+            feat_pool = feat_pool1 + feat_pool2
+            feat_fc = feat_fc1 + feat_fc2
+            query_feat_pool[ptr:ptr + batch_num, :] = feat_pool.detach().cpu().numpy()
+            query_feat_fc[ptr:ptr+batch_num,: ]   = feat_fc.detach().cpu().numpy()
             ptr = ptr + batch_num
     print('Extracting Time:\t {:.3f}'.format(time.time() - start))
 
     start = time.time()
     # compute the similarity
-    distmat_att = np.matmul(query_feat_att, np.transpose(gall_feat_att))
+    distmat_pool = np.matmul(query_feat_pool, np.transpose(gall_feat_pool))
+    distmat_fc = np.matmul(query_feat_fc, np.transpose(gall_feat_fc))
+    distmat = distmat_pool + distmat_fc
 
     # evaluation
     if dataset == 'regdb':
-        cmc_att, mAP_att, mINP_att = eval_regdb(-distmat_att, query_label, gall_label)
+        cmc_att, mAP_att, mINP_att = eval_regdb(-distmat, query_label, gall_label)
     elif dataset == 'sysu':
-        cmc_att, mAP_att, mINP_att = eval_sysu(-distmat_att, query_label, gall_label, query_cam, gall_cam)
+        cmc_att, mAP_att, mINP_att = eval_sysu(-distmat, query_label, gall_label, query_cam, gall_cam)
     print('Evaluation Time:\t {:.3f}'.format(time.time() - start))
 
     return cmc_att, mAP_att, mINP_att
